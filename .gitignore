@@ -3,6 +3,9 @@
 /tmp/
 /tmp-*/
 
+# Build
+/bin/
+
 # Rust
 /rust/**/target/
 
