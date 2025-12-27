@@ -52,12 +52,22 @@ fn decode_fvk_from_ufvk(ufvk: &str) -> Result<FullViewingKey, ErrorCode> {
         return Err(ErrorCode::UfvkEmpty);
     }
 
-    let (typecode, value) = zip316::decode_single_tlv_container(HRP_JUNO_UFVK, ufvk)
+    let items = zip316::decode_tlv_container(HRP_JUNO_UFVK, ufvk)
         .map_err(map_zip316_err)?;
 
-    if typecode != TYPECODE_ORCHARD {
-        return Err(ErrorCode::UfvkTypecodeUnsupported);
+    let mut orchard_value: Option<Vec<u8>> = None;
+    for (typecode, value) in items {
+        if typecode != TYPECODE_ORCHARD {
+            continue;
+        }
+        if orchard_value.is_some() {
+            return Err(ErrorCode::UfvkTlvInvalid);
+        }
+        orchard_value = Some(value);
     }
+
+    let value = orchard_value.ok_or(ErrorCode::UfvkTypecodeUnsupported)?;
+
     if value.len() != 96 {
         return Err(ErrorCode::UfvkValueLenInvalid);
     }
@@ -252,5 +262,68 @@ mod tests {
         let single = derive_address_from_ufvk(&ufvk, 5).expect("single");
         let batch = derive_addresses_from_ufvk(&ufvk, 5, 1).expect("batch");
         assert_eq!(batch, vec![single]);
+    }
+
+    #[test]
+    fn derives_from_multi_tlv_ufvk_with_orchard_not_first() {
+        let seed = [7u8; 64];
+        let account = AccountId::try_from(0).expect("account");
+        let sk =
+            orchard::keys::SpendingKey::from_zip32_seed(&seed, JUNO_COIN_TYPE, account).expect("sk");
+        let fvk = FullViewingKey::from(&sk);
+        let fvk_bytes = fvk.to_bytes();
+        let extra = [1u8, 2u8, 3u8];
+
+        let ufvk = zip316::encode_tlv_container(
+            HRP_JUNO_UFVK,
+            &[
+                zip316::Tlv {
+                    typecode: 0xdead,
+                    value: &extra,
+                },
+                zip316::Tlv {
+                    typecode: TYPECODE_ORCHARD,
+                    value: &fvk_bytes,
+                },
+            ],
+        )
+        .expect("ufvk");
+
+        let got = derive_address_from_ufvk(&ufvk, 0).expect("addr");
+
+        let expected_raw = fvk.address_at(0u32, Scope::External).to_raw_address_bytes();
+        let expected =
+            zip316::encode_unified_container(HRP_JUNO_UA, TYPECODE_ORCHARD, &expected_raw)
+                .expect("expected");
+
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn rejects_multi_tlv_ufvk_with_duplicate_orchard_items() {
+        let seed = [7u8; 64];
+        let account = AccountId::try_from(0).expect("account");
+        let sk =
+            orchard::keys::SpendingKey::from_zip32_seed(&seed, JUNO_COIN_TYPE, account).expect("sk");
+        let fvk = FullViewingKey::from(&sk);
+        let fvk_bytes = fvk.to_bytes();
+
+        let ufvk = zip316::encode_tlv_container(
+            HRP_JUNO_UFVK,
+            &[
+                zip316::Tlv {
+                    typecode: TYPECODE_ORCHARD,
+                    value: &fvk_bytes,
+                },
+                zip316::Tlv {
+                    typecode: TYPECODE_ORCHARD,
+                    value: &fvk_bytes,
+                },
+            ],
+        )
+        .expect("ufvk");
+
+        let err = derive_address_from_ufvk(&ufvk, 0).expect_err("expected error");
+        assert_eq!(err.as_str(), ErrorCode::UfvkTlvInvalid.as_str());
     }
 }

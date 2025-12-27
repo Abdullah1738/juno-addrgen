@@ -49,6 +49,12 @@ pub enum Zip316Error {
     TlvTrailingBytes,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Tlv<'a> {
+    pub typecode: u64,
+    pub value: &'a [u8],
+}
+
 fn write_compact_size(n: u64, out: &mut Vec<u8>) {
     if n <= 252 {
         out.push(n as u8);
@@ -146,32 +152,52 @@ fn decode_zip316_bech32m(hrp_expected: &str, s: &str) -> Result<Vec<u8>, Zip316E
     Ok(bytes)
 }
 
+pub fn encode_tlv_container(hrp: &str, items: &[Tlv<'_>]) -> Result<String, Zip316Error> {
+    let mut payload = Vec::new();
+    for item in items {
+        write_compact_size(item.typecode, &mut payload);
+        write_compact_size(item.value.len() as u64, &mut payload);
+        payload.extend_from_slice(item.value);
+    }
+    encode_zip316_bech32m(hrp, &payload)
+}
+
 pub fn encode_unified_container(
     hrp: &str,
     typecode: u64,
     value: &[u8],
 ) -> Result<String, Zip316Error> {
-    let mut payload = Vec::with_capacity(value.len() + 16);
-    write_compact_size(typecode, &mut payload);
-    write_compact_size(value.len() as u64, &mut payload);
-    payload.extend_from_slice(value);
-    encode_zip316_bech32m(hrp, &payload)
+    let items = [Tlv { typecode, value }];
+    encode_tlv_container(hrp, &items)
+}
+
+pub fn decode_tlv_container(hrp_expected: &str, s: &str) -> Result<Vec<(u64, Vec<u8>)>, Zip316Error> {
+    let bytes = decode_zip316_bech32m(hrp_expected, s)?;
+    let mut rest = bytes.as_slice();
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let typecode = read_compact_size(&mut rest)?;
+        let len = read_compact_size(&mut rest)? as usize;
+        if rest.len() < len {
+            return Err(Zip316Error::TlvInvalid);
+        }
+        let (value, next) = rest.split_at(len);
+        out.push((typecode, value.to_vec()));
+        rest = next;
+    }
+    Ok(out)
 }
 
 pub fn decode_single_tlv_container(
     hrp_expected: &str,
     s: &str,
 ) -> Result<(u64, Vec<u8>), Zip316Error> {
-    let bytes = decode_zip316_bech32m(hrp_expected, s)?;
-    let mut rest = bytes.as_slice();
-    let typecode = read_compact_size(&mut rest)?;
-    let len = read_compact_size(&mut rest)? as usize;
-    if rest.len() != len {
-        return Err(if rest.len() < len {
-            Zip316Error::TlvInvalid
-        } else {
-            Zip316Error::TlvTrailingBytes
-        });
+    let items = decode_tlv_container(hrp_expected, s)?;
+    if items.len() != 1 {
+        return Err(Zip316Error::TlvTrailingBytes);
     }
-    Ok((typecode, rest.to_vec()))
+    Ok(items
+        .into_iter()
+        .next()
+        .expect("len checked"))
 }
