@@ -9,27 +9,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/Abdullah1738/juno-addrgen/pkg/addrgen"
 )
 
-func Run(args []string) int {
+type Deriver interface {
+	Derive(ufvk string, index uint32) (string, error)
+	Batch(ufvk string, start uint32, count uint32) ([]string, error)
+}
+
+func Run(args []string, deriver Deriver) int {
+	return RunWithIO(args, deriver, os.Stdout, os.Stderr)
+}
+
+func RunWithIO(args []string, deriver Deriver, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		writeUsage(os.Stdout)
+		writeUsage(stdout)
 		return 2
 	}
 
 	switch args[0] {
 	case "-h", "--help", "help":
-		writeUsage(os.Stdout)
+		writeUsage(stdout)
 		return 0
 	case "derive":
-		return runDerive(args[1:], os.Stdout, os.Stderr)
+		if deriver == nil {
+			return writeErr(stdout, stderr, false, "internal", "missing deriver")
+		}
+		return runDerive(args[1:], deriver, stdout, stderr)
 	case "batch":
-		return runBatch(args[1:], os.Stdout, os.Stderr)
+		if deriver == nil {
+			return writeErr(stdout, stderr, false, "internal", "missing deriver")
+		}
+		return runBatch(args[1:], deriver, stdout, stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
-		writeUsage(os.Stderr)
+		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
+		writeUsage(stderr)
 		return 2
 	}
 }
@@ -48,7 +61,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  - This tool is offline; it never talks to junocashd or the network.")
 }
 
-func runDerive(args []string, stdout, stderr io.Writer) int {
+func runDerive(args []string, deriver Deriver, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("derive", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -80,9 +93,9 @@ func runDerive(args []string, stdout, stderr io.Writer) int {
 		return writeErr(stdout, stderr, jsonOut, "index_invalid", "index out of range")
 	}
 
-	address, err := addrgen.Derive(ufvk, idx)
+	address, err := deriver.Derive(ufvk, idx)
 	if err != nil {
-		return writeAddrgenErr(stdout, stderr, jsonOut, err)
+		return writeDeriverErr(stdout, stderr, jsonOut, err)
 	}
 
 	if jsonOut {
@@ -97,7 +110,7 @@ func runDerive(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runBatch(args []string, stdout, stderr io.Writer) int {
+func runBatch(args []string, deriver Deriver, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("batch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -135,9 +148,9 @@ func runBatch(args []string, stdout, stderr io.Writer) int {
 		return writeErr(stdout, stderr, jsonOut, "count_invalid", "count out of range")
 	}
 
-	addresses, err := addrgen.Batch(ufvk, s, c)
+	addresses, err := deriver.Batch(ufvk, s, c)
 	if err != nil {
-		return writeAddrgenErr(stdout, stderr, jsonOut, err)
+		return writeDeriverErr(stdout, stderr, jsonOut, err)
 	}
 
 	if jsonOut {
@@ -197,10 +210,15 @@ func uint64ToUint32(v uint64) (uint32, bool) {
 	return uint32(v), true
 }
 
-func writeAddrgenErr(stdout, stderr io.Writer, jsonOut bool, err error) int {
-	var ae *addrgen.Error
-	if errors.As(err, &ae) {
-		return writeErr(stdout, stderr, jsonOut, string(ae.Code), "")
+type codedError interface {
+	error
+	CodeString() string
+}
+
+func writeDeriverErr(stdout, stderr io.Writer, jsonOut bool, err error) int {
+	var ce codedError
+	if errors.As(err, &ce) {
+		return writeErr(stdout, stderr, jsonOut, ce.CodeString(), "")
 	}
 	return writeErr(stdout, stderr, jsonOut, "internal", err.Error())
 }

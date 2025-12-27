@@ -32,6 +32,10 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("addrgen: %s", e.Code)
 }
 
+func (e *Error) CodeString() string {
+	return string(e.Code)
+}
+
 func (e *Error) Is(target error) bool {
 	t, ok := target.(*Error)
 	if !ok {
